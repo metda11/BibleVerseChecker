@@ -5,40 +5,38 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
+using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
-using System.Threading;
 using System.Windows.Forms;
 
 namespace BibleVerseOpener
 {
     class Program
     {
-        // Importiere die benötigten Win32 API Funktionen
+        // Win32 API Funktionen
         [DllImport("user32.dll")]
         private static extern bool RegisterHotKey(IntPtr hWnd, int id, int fsModifiers, int vk);
 
         [DllImport("user32.dll")]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-        // Definiere Konstanten
+        // Konstanten
         private const int MOD_CONTROL = 0x0002;
         private const int VK_C = 0x43;
         private const int HOTKEY_ID = 1;
 
-        // Bibelreferenz-Regex
-        private static readonly Regex BibleVerseRegex = new Regex(
-            @"(1\s*|2\s*|3\s*)?(Mose|Samuel|Könige|Chronik|Johannes|Timotheus|Petrus|Thessalonicher|Korinther)?\.?\s*" +
-            @"(Genesis|Gen|Exodus|Ex|Levitikus|Lev|Numeri|Num|Deuteronomium|Dtn|Deutero|Josua|Jos|Richter|Ri|Rut|Rt|" +
-            @"Samuel|Sam|Könige|Kön|Chronik|Chr|Esra|Esr|Nehemia|Neh|Tobit|Tob|Judit|Jdt|Ester|Est|" +
-            @"Makkabäer|Makk|Ijob|Hiob|Psalmen|Ps|Psalm|Sprüche|Spr|Kohelet|Koh|Hoheslied|Hld|Weisheit|Weish|" +
-            @"Jesus Sirach|Sir|Jesaja|Jes|Jeremia|Jer|Klagelieder|Klgl|Baruch|Bar|Ezechiel|Ez|Daniel|Dan|" +
-            @"Hosea|Hos|Joel|Am|Obadja|Obd|Jona|Jon|Micha|Mi|Nahum|Nah|Habakuk|Hab|Zefanja|Zef|Haggai|Hag|" +
-            @"Sacharja|Sach|Maleachi|Mal|Matthäus|Mt|Markus|Mk|Lukas|Lk|Johannes|Joh|Apostelgeschichte|Apg|" +
-            @"Römer|Röm|Korinther|Kor|Galater|Gal|Epheser|Eph|Philipper|Phil|Kolosser|Kol|Thessalonicher|Thess|" +
-            @"Timotheus|Tim|Titus|Tit|Philemon|Phlm|Hebräer|Hebr|Jakobus|Jak|Petrus|Petr|Judas|Jud|Offenbarung|Offb)" +
-            @"\s*(\d+)(?:\s*,\s*(\d+)(?:\s*-\s*(\d+))?)?",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Konfigurationsklasse
+        public class AppConfig
+        {
+            public string[] SupportedLanguages { get; set; }
+            public Dictionary<string, string> BibleUrls { get; set; }
+            public Dictionary<string, Dictionary<string, string>> BookMappings { get; set; }
+        }
+
+        // Statische Konfigurationsvariablen
+        private static AppConfig config;
+        private static Regex BibleVerseRegex;
 
         private static DateTime lastCopyTime = DateTime.MinValue;
         private static NotifyIcon notifyIcon;
@@ -46,6 +44,9 @@ namespace BibleVerseOpener
         [STAThread]
         static void Main(string[] args)
         {
+            // Lade Konfiguration
+            LoadConfiguration();
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -63,17 +64,20 @@ namespace BibleVerseOpener
             // Erstelle ein Kontextmenü für den Tray-Icon
             var contextMenu = new ContextMenuStrip();
             contextMenu.Items.Add("Beenden", null, (s, e) => Application.Exit());
-            contextMenu.Items.Add("Info", null, (s, e) => ShowInfo());
+            contextMenu.Items.Add("Info", null, ShowInfo);
             notifyIcon.ContextMenuStrip = contextMenu;
 
             // Doppelklick auf Icon zeigt Info an
-            notifyIcon.DoubleClick += (s, e) => ShowInfo();
+            notifyIcon.DoubleClick += (s, e) => ShowInfo(null, null);
 
             // Registriere den Hotkey
             HookClipboard();
 
             // Zeige eine Benachrichtigung, dass die App gestartet wurde
-            notifyIcon.ShowBalloonTip(3000, "Bibelvers-Opener", "Anwendung läuft im Hintergrund. Drücke 2x STRG+C innerhalb von 2 Sekunden, um einen Bibelvers zu öffnen.", ToolTipIcon.Info);
+            notifyIcon.ShowBalloonTip(3000, "Bibelvers-Opener",
+                $"Anwendung läuft im Hintergrund. " +
+                $"Drücke 2x STRG+C innerhalb von 2 Sekunden, um einen Bibelvers zu öffnen.",
+                ToolTipIcon.Info);
 
             // Halte die Anwendung am Laufen
             Application.Run();
@@ -83,21 +87,182 @@ namespace BibleVerseOpener
             UnhookClipboard();
         }
 
-        private static void ShowInfo()
+        private static void LoadConfiguration()
+        {
+            string configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.json");
+
+            try
+            {
+                string jsonString = File.ReadAllText(configPath);
+                config = JsonSerializer.Deserialize<AppConfig>(jsonString, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+                if (config == null)
+                {
+                    throw new Exception("Deserialisierung ergab ein null-Objekt.");
+                }
+
+                // Dynamische Regex-Generierung basierend auf Konfiguration
+                BuildBibleVerseRegex();
+            }
+            catch (JsonException jsonEx)
+            {
+                MessageBox.Show($"JSON-Fehler beim Laden der Konfiguration: {jsonEx.Message}",
+                    "Konfigurationsfehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Fehler beim Laden der Konfiguration: {ex.Message}",
+                    "Konfigurationsfehler", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+            }
+        }
+
+        private static void BuildBibleVerseRegex()
+        {
+            // Baue die Regex dynamisch aus den Buchmappings aller unterstützten Sprachen
+            var allBookPatterns = config.SupportedLanguages.SelectMany(lang =>
+                config.BookMappings[lang].Keys.Concat(config.BookMappings[lang].Values)
+            );
+
+            string bookPattern = string.Join("|", allBookPatterns);
+
+            BibleVerseRegex = new Regex(
+                @$"({bookPattern})\.?\s*(\d+)(?:\s*,\s*(\d+)(?:\s*-\s*(\d+))?)?",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase
+            );
+        }
+
+        private static void ShowInfo(object sender, EventArgs e)
         {
             MessageBox.Show(
                 "Bibelvers-Opener\n\n" +
                 "Markiere einen Bibelvers und drücke zweimal STRG+C innerhalb von 2 Sekunden.\n" +
                 "Das Programm erkennt den Vers und öffnet ihn in deinem Browser.\n\n" +
                 "Unterstützte Formate:\n" +
-                "- Johannes 3,16\n" +
-                "- Joh 3,16\n" +
-                "- Joh 3,16-18\n" +
-                "- 1. Korinther 13,4-7",
+                "- 1Mo 3,16\n" +
+                "- Gen 3,16\n" +
+                "- 1Mo 3,16-18",
                 "Über Bibelvers-Opener",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
             );
+        }
+                private static void ProcessBibleVerses(string text)
+        {
+            var matches = BibleVerseRegex.Matches(text);
+
+            if (matches.Count > 0)
+            {
+                foreach (Match match in matches)
+                {
+                    // Extrahiere die gefundenen Gruppen
+                    string bookAbbr = match.Groups[1].Value.Trim();
+                    string chapter = match.Groups[2].Value.Trim();
+                    string verse = match.Groups[3].Value.Trim();
+                    string endVerse = match.Groups[4].Value.Trim();
+
+                    // Finde die Sprache und den vollständigen Buchnamen
+                    string detectedLanguage = null;
+                    string fullBookName = null;
+
+                    foreach (var lang in config.SupportedLanguages)
+                    {
+                        if (config.BookMappings[lang].ContainsKey(bookAbbr))
+                        {
+                            detectedLanguage = lang;
+                            fullBookName = config.BookMappings[lang][bookAbbr];
+                            break;
+                        }
+                        else if (config.BookMappings[lang].ContainsValue(bookAbbr))
+                        {
+                            detectedLanguage = lang;
+                            fullBookName = bookAbbr;
+                            break;
+                        }
+                    }
+
+                    if (detectedLanguage == null)
+                    {
+                        // Keine passende Sprache gefunden, überspringen
+                        continue;
+                    }
+
+                    // Baue den Link auf
+                    string url = $"{config.BibleUrls[detectedLanguage]}{Uri.EscapeDataString(fullBookName)}{chapter}";
+
+                    if (!string.IsNullOrEmpty(verse))
+                    {
+                        url += $",{verse}";
+                        if (!string.IsNullOrEmpty(endVerse))
+                        {
+                            url += $"-{endVerse}";
+                        }
+                    }
+
+                    // Öffne den Link im Standardbrowser
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = url,
+                        UseShellExecute = true
+                    });
+
+                    // Zeige eine Benachrichtigung
+                    notifyIcon.ShowBalloonTip(2000, "Bibelvers gefunden",
+                        $"Öffne {fullBookName} {chapter}{(!string.IsNullOrEmpty(verse) ? $",{verse}" : "")}" +
+                        $"{(!string.IsNullOrEmpty(endVerse) ? $"-{endVerse}" : "")}",
+                        ToolTipIcon.Info);
+
+                    // Nur den ersten gefundenen Vers verarbeiten
+                    break;
+                }
+            }
+            else
+            {
+                notifyIcon.ShowBalloonTip(2000, "Kein Bibelvers gefunden",
+                    "Im kopierten Text wurde kein Bibelvers erkannt.", ToolTipIcon.Warning);
+            }
+        }
+
+        private static void HookClipboard()
+        {
+            // Registriere den EventHandler für die Zwischenablage
+            ClipboardNotification.ClipboardChanged += OnClipboardChanged;
+        }
+
+        private static void UnhookClipboard()
+        {
+            // Entferne den EventHandler
+            ClipboardNotification.ClipboardChanged -= OnClipboardChanged;
+        }
+
+        private static void OnClipboardChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                // Prüfen, ob das zweite STRG+C innerhalb von 2 Sekunden erfolgte
+                DateTime now = DateTime.Now;
+                if ((now - lastCopyTime).TotalSeconds <= 2)
+                {
+                    // Hole den Text aus der Zwischenablage
+                    string clipboardText = Clipboard.GetText();
+                    if (!string.IsNullOrWhiteSpace(clipboardText))
+                    {
+                        ProcessBibleVerses(clipboardText);
+                    }
+                    lastCopyTime = DateTime.MinValue; // Zurücksetzen
+                }
+                else
+                {
+                    lastCopyTime = now;
+                }
+            }
+            catch (Exception ex)
+            {
+                notifyIcon.ShowBalloonTip(3000, "Fehler", $"Fehler beim Verarbeiten der Zwischenablage: {ex.Message}", ToolTipIcon.Error);
+            }
         }
 
         private static Icon CreateBibleIcon()
@@ -180,158 +345,62 @@ namespace BibleVerseOpener
             }
         }
 
-        private static void HookClipboard()
+        // ClipboardNotification-Klasse bleibt unverändert
+        public static class ClipboardNotification
         {
-            // Registriere den EventHandler für die Zwischenablage
-            ClipboardNotification.ClipboardChanged += OnClipboardChanged;
-        }
+            public static event EventHandler ClipboardChanged;
 
-        private static void UnhookClipboard()
-        {
-            // Entferne den EventHandler
-            ClipboardNotification.ClipboardChanged -= OnClipboardChanged;
-        }
+            private static ClipboardWatcher watcher;
 
-        private static void OnClipboardChanged(object sender, EventArgs e)
-        {
-            try
+            static ClipboardNotification()
             {
-                // Prüfen, ob das zweite STRG+C innerhalb von 2 Sekunden erfolgte
-                DateTime now = DateTime.Now;
-                if ((now - lastCopyTime).TotalSeconds <= 2)
-                {
-                    // Hole den Text aus der Zwischenablage
-                    string clipboardText = Clipboard.GetText();
-                    if (!string.IsNullOrWhiteSpace(clipboardText))
-                    {
-                        ProcessBibleVerses(clipboardText);
-                    }
-                    lastCopyTime = DateTime.MinValue; // Zurücksetzen
-                }
-                else
-                {
-                    lastCopyTime = now;
-                }
+                watcher = new ClipboardWatcher();
+                watcher.ClipboardChanged += (o, e) => OnClipboardChanged();
             }
-            catch (Exception ex)
+
+            private static void OnClipboardChanged()
             {
-                notifyIcon.ShowBalloonTip(3000, "Fehler", $"Fehler beim Verarbeiten der Zwischenablage: {ex.Message}", ToolTipIcon.Error);
+                ClipboardChanged?.Invoke(null, EventArgs.Empty);
             }
-        }
 
-        private static void ProcessBibleVerses(string text)
-        {
-            var matches = BibleVerseRegex.Matches(text);
-
-            if (matches.Count > 0)
+            private class ClipboardWatcher : Form
             {
-                foreach (Match match in matches)
+                public event EventHandler ClipboardChanged;
+
+                public ClipboardWatcher()
                 {
-                    // Extrahiere die gefundenen Gruppen
-                    string numberPrefix = match.Groups[1].Value.Trim();
-                    string bookAlt = match.Groups[2].Value.Trim();
-                    string book = match.Groups[3].Value.Trim();
-                    string chapter = match.Groups[4].Value.Trim();
-                    string verse = match.Groups[5].Value.Trim();
-                    string endVerse = match.Groups[6].Value.Trim();
+                    // Notwendig, damit die Form Nachrichten erhält, aber unsichtbar bleibt
+                    ShowInTaskbar = false;
+                    FormBorderStyle = FormBorderStyle.None;
+                    Size = new Size(0, 0);
+                    WindowState = FormWindowState.Minimized;
 
-                    // Kombiniere Präfix und Buch
-                    string fullBook = !string.IsNullOrEmpty(numberPrefix) ?
-                        $"{numberPrefix} {(!string.IsNullOrEmpty(bookAlt) ? bookAlt : book)}" :
-                        book;
+                    // Melde sich für Windows Clipboard Nachrichten an
+                    SetClipboardViewer();
+                }
 
-                    // Baue den Link auf
-                    string url = $"https://www.bibleserver.com/LUT/{Uri.EscapeDataString(fullBook)}{chapter}";
+                private void SetClipboardViewer()
+                {
+                    // Füge die Form zur Clipboard Chain hinzu
+                    AddClipboardFormatListener(Handle);
+                }
 
-                    if (!string.IsNullOrEmpty(verse))
+                protected override void WndProc(ref Message m)
+                {
+                    const int WM_CLIPBOARDUPDATE = 0x031D;
+
+                    if (m.Msg == WM_CLIPBOARDUPDATE)
                     {
-                        url += $",{verse}";
-                        if (!string.IsNullOrEmpty(endVerse))
-                        {
-                            url += $"-{endVerse}";
-                        }
+                        ClipboardChanged?.Invoke(this, EventArgs.Empty);
                     }
 
-                    // Öffne den Link im Standardbrowser
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = url,
-                        UseShellExecute = true
-                    });
-
-                    // Zeige eine Benachrichtigung
-                    notifyIcon.ShowBalloonTip(2000, "Bibelvers gefunden",
-                        $"Öffne {fullBook} {chapter}{(!string.IsNullOrEmpty(verse) ? $",{verse}" : "")}" +
-                        $"{(!string.IsNullOrEmpty(endVerse) ? $"-{endVerse}" : "")}",
-                        ToolTipIcon.Info);
-
-                    // Nur den ersten gefundenen Vers verarbeiten
-                    break;
-                }
-            }
-            else
-            {
-                notifyIcon.ShowBalloonTip(2000, "Kein Bibelvers gefunden",
-                    "Im kopierten Text wurde kein Bibelvers erkannt.", ToolTipIcon.Warning);
-            }
-        }
-    }
-
-    // Hilfsklasse zur Überwachung der Zwischenablage
-    public static class ClipboardNotification
-    {
-        public static event EventHandler ClipboardChanged;
-
-        private static ClipboardWatcher watcher;
-
-        static ClipboardNotification()
-        {
-            watcher = new ClipboardWatcher();
-            watcher.ClipboardChanged += (o, e) => OnClipboardChanged();
-        }
-
-        private static void OnClipboardChanged()
-        {
-            ClipboardChanged?.Invoke(null, EventArgs.Empty);
-        }
-
-        private class ClipboardWatcher : Form
-        {
-            public event EventHandler ClipboardChanged;
-
-            public ClipboardWatcher()
-            {
-                // Notwendig, damit die Form Nachrichten erhält, aber unsichtbar bleibt
-                ShowInTaskbar = false;
-                FormBorderStyle = FormBorderStyle.None;
-                Size = new Size(0, 0);
-                WindowState = FormWindowState.Minimized;
-
-                // Melde sich für Windows Clipboard Nachrichten an
-                SetClipboardViewer();
-            }
-
-            private void SetClipboardViewer()
-            {
-                // Füge die Form zur Clipboard Chain hinzu
-                AddClipboardFormatListener(Handle);
-            }
-
-            protected override void WndProc(ref Message m)
-            {
-                const int WM_CLIPBOARDUPDATE = 0x031D;
-
-                if (m.Msg == WM_CLIPBOARDUPDATE)
-                {
-                    ClipboardChanged?.Invoke(this, EventArgs.Empty);
+                    base.WndProc(ref m);
                 }
 
-                base.WndProc(ref m);
+                [DllImport("user32.dll", SetLastError = true)]
+                [return: MarshalAs(UnmanagedType.Bool)]
+                private static extern bool AddClipboardFormatListener(IntPtr hwnd);
             }
-
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            private static extern bool AddClipboardFormatListener(IntPtr hwnd);
         }
     }
 }
