@@ -76,7 +76,7 @@ namespace BibleVerseOpener
             // Zeige eine Benachrichtigung, dass die App gestartet wurde
             notifyIcon.ShowBalloonTip(3000, "Bibelvers-Opener",
                 $"Anwendung läuft im Hintergrund. " +
-                $"Drücke 2x STRG+C innerhalb von 2 Sekunden, um einen Bibelvers zu öffnen.",
+                $"Drücke 2x STRG+C innerhalb von 1 Sekunden, um einen Bibelvers zu öffnen.",
                 ToolTipIcon.Info);
 
             // Halte die Anwendung am Laufen
@@ -139,7 +139,7 @@ namespace BibleVerseOpener
         {
             MessageBox.Show(
                 "Bibelvers-Opener\n\n" +
-                "Markiere einen Bibelvers und drücke zweimal STRG+C innerhalb von 2 Sekunden.\n" +
+                "Markiere einen Bibelvers und drücke zweimal STRG+C innerhalb von 1 Sekunden.\n" +
                 "Das Programm erkennt den Vers und öffnet ihn in deinem Browser.\n\n" +
                 "Unterstützte Formate:\n" +
                 "- 1Mo 3,16\n" +
@@ -242,9 +242,9 @@ namespace BibleVerseOpener
         {
             try
             {
-                // Prüfen, ob das zweite STRG+C innerhalb von 2 Sekunden erfolgte
+                // Prüfen, ob das zweite STRG+C innerhalb von 1 Sekunden erfolgte
                 DateTime now = DateTime.Now;
-                if ((now - lastCopyTime).TotalSeconds <= 2)
+                if ((now - lastCopyTime).TotalSeconds <= 1)
                 {
                     // Hole den Text aus der Zwischenablage
                     string clipboardText = Clipboard.GetText();
