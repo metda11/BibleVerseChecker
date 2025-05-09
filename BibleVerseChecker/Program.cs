@@ -9,6 +9,8 @@ using System.Text.Json;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
+using System.Linq;
+using System.Collections.Generic;
 
 namespace BibleVerseOpener
 {
@@ -40,6 +42,10 @@ namespace BibleVerseOpener
 
         private static DateTime lastCopyTime = DateTime.MinValue;
         private static NotifyIcon notifyIcon;
+
+        // Variablen für Debouncing
+        private static DateTime lastClipboardEvent = DateTime.MinValue;
+        private static readonly TimeSpan debounceDuration = TimeSpan.FromMilliseconds(100);
 
         [STAThread]
         static void Main(string[] args)
@@ -150,7 +156,7 @@ namespace BibleVerseOpener
                 MessageBoxIcon.Information
             );
         }
-                private static void ProcessBibleVerses(string text)
+        private static void ProcessBibleVerses(string text)
         {
             var matches = BibleVerseRegex.Matches(text);
 
@@ -210,10 +216,10 @@ namespace BibleVerseOpener
                     });
 
                     // Zeige eine Benachrichtigung
-                    notifyIcon.ShowBalloonTip(2000, "Bibelvers gefunden",
-                        $"Öffne {fullBookName} {chapter}{(!string.IsNullOrEmpty(verse) ? $",{verse}" : "")}" +
-                        $"{(!string.IsNullOrEmpty(endVerse) ? $"-{endVerse}" : "")}",
-                        ToolTipIcon.Info);
+                    //notifyIcon.ShowBalloonTip(2000, "Bibelvers gefunden",
+                    //    $"Öffne {fullBookName} {chapter}{(!string.IsNullOrEmpty(verse) ? $",{verse}" : "")}" +
+                    //    $"{(!string.IsNullOrEmpty(endVerse) ? $"-{endVerse}" : "")}",
+                    //    ToolTipIcon.Info);
 
                     // Nur den ersten gefundenen Vers verarbeiten
                     break;
@@ -221,8 +227,8 @@ namespace BibleVerseOpener
             }
             else
             {
-                notifyIcon.ShowBalloonTip(2000, "Kein Bibelvers gefunden",
-                    "Im kopierten Text wurde kein Bibelvers erkannt.", ToolTipIcon.Warning);
+                //notifyIcon.ShowBalloonTip(2000, "Kein Bibelvers gefunden",
+                //    "Im kopierten Text wurde kein Bibelvers erkannt.", ToolTipIcon.Warning);
             }
         }
 
@@ -238,30 +244,74 @@ namespace BibleVerseOpener
             ClipboardNotification.ClipboardChanged -= OnClipboardChanged;
         }
 
+        private static bool isWaitingForSecondCopy = false;
+        private static System.Threading.Timer resetTimer;
+        private static string firstCopyContent = "";
+
         private static void OnClipboardChanged(object sender, EventArgs e)
         {
             try
             {
-                // Prüfen, ob das zweite STRG+C innerhalb von 1 Sekunden erfolgte
+                // Implementiere Debouncing: Ignoriere Events, die zu schnell aufeinander folgen
                 DateTime now = DateTime.Now;
-                if ((now - lastCopyTime).TotalSeconds <= 1)
+                if (now - lastClipboardEvent < debounceDuration)
                 {
-                    // Hole den Text aus der Zwischenablage
-                    string clipboardText = Clipboard.GetText();
-                    if (!string.IsNullOrWhiteSpace(clipboardText))
-                    {
-                        ProcessBibleVerses(clipboardText);
-                    }
-                    lastCopyTime = DateTime.MinValue; // Zurücksetzen
+                    // Event ignorieren, da es zu schnell nach dem letzten kommt
+                    return;
                 }
-                else
+
+                // Aktualisiere den Zeitstempel für das Debouncing
+                lastClipboardEvent = now;
+
+                // Verarbeite den Clipboard-Inhalt
+                string clipboardText = Clipboard.GetText();
+
+                // Beim ersten STRG+C wird der Timer gestartet
+                if (!isWaitingForSecondCopy)
                 {
                     lastCopyTime = now;
+                    isWaitingForSecondCopy = true;
+                    firstCopyContent = clipboardText;
+
+                    // Timer zum Zurücksetzen des Status, wenn kein zweiter STRG+C innerhalb von 1 Sekunden erfolgt
+                    if (resetTimer == null)
+                    {
+                        resetTimer = new System.Threading.Timer((state) =>
+                        {
+                            isWaitingForSecondCopy = false;
+                        }, null, 1000, Timeout.Infinite);
+                    }
+                    else
+                    {
+                        resetTimer.Change(1000, Timeout.Infinite);
+                    }
+
+                    // Optional: Zeige dem Benutzer einen Hinweis an, dass der erste STRG+C erkannt wurde
+                    //notifyIcon.ShowBalloonTip(1000, "Bereit",
+                    //    "Erster STRG+C erkannt. Drücke nochmal für Bibelvers-Suche.",
+                    //    ToolTipIcon.Info);
+                }
+                // Beim zweiten STRG+C wird der Inhalt verarbeitet
+                else if ((now - lastCopyTime).TotalSeconds <= 1)
+                {
+                    // Setze den Status zurück
+                    isWaitingForSecondCopy = false;
+                    resetTimer.Change(Timeout.Infinite, Timeout.Infinite);
+
+                    if (clipboardText == firstCopyContent)
+                    {
+                        if (!string.IsNullOrWhiteSpace(clipboardText))
+                        {
+                            ProcessBibleVerses(clipboardText);
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                notifyIcon.ShowBalloonTip(3000, "Fehler", $"Fehler beim Verarbeiten der Zwischenablage: {ex.Message}", ToolTipIcon.Error);
+                //notifyIcon.ShowBalloonTip(3000, "Fehler",
+                //    $"Fehler beim Verarbeiten der Zwischenablage: {ex.Message}",
+                //    ToolTipIcon.Error);
             }
         }
 
@@ -345,7 +395,7 @@ namespace BibleVerseOpener
             }
         }
 
-        // ClipboardNotification-Klasse bleibt unverändert
+        // Verbesserte ClipboardNotification-Klasse mit Vorkehrungen gegen doppelte Events
         public static class ClipboardNotification
         {
             public static event EventHandler ClipboardChanged;
@@ -366,6 +416,10 @@ namespace BibleVerseOpener
             private class ClipboardWatcher : Form
             {
                 public event EventHandler ClipboardChanged;
+
+                // Debounce-Mechanismus auf Ebene des Watchers
+                private DateTime lastEventTime = DateTime.MinValue;
+                private readonly TimeSpan messageDebounceTime = TimeSpan.FromMilliseconds(100);
 
                 public ClipboardWatcher()
                 {
@@ -391,7 +445,14 @@ namespace BibleVerseOpener
 
                     if (m.Msg == WM_CLIPBOARDUPDATE)
                     {
-                        ClipboardChanged?.Invoke(this, EventArgs.Empty);
+                        DateTime now = DateTime.Now;
+
+                        // Prüfe, ob das Event innerhalb der Debounce-Zeit liegt
+                        if ((now - lastEventTime) > messageDebounceTime)
+                        {
+                            lastEventTime = now;
+                            ClipboardChanged?.Invoke(this, EventArgs.Empty);
+                        }
                     }
 
                     base.WndProc(ref m);
